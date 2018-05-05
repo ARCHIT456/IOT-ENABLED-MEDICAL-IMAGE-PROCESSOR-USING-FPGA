@@ -1,0 +1,513 @@
+module rpi_img_proc_disp(
+input clk,			//pixel clock: 25MHz
+input SCLK,
+input MOSI,
+input CS,
+input sw_proc_img,
+input [2:0] select_process,
+input reset,
+input reset_image,
+output hsync,        //horizontal sync out
+output vsync,        //vertical sync out
+output reg [3:0] red,    //red vga output
+output reg [3:0] green, //green vga output
+output reg [3:0] blue,    //blue vga output
+output led_img_pro
+);
+wire vga_clk;
+// video structure constants
+parameter hpixels = 800;// horizontal pixels per line
+parameter vlines = 521; // vertical lines per frame
+parameter hpulse = 96;     // hsync pulse length
+parameter vpulse = 2;     // vsync pulse length
+parameter hbp = 144;     // end of horizontal back porch {[0-95] hsync pulse + [96-143] horizontal back porch} 
+parameter hfp = 784;     // beginning of horizontal front porch [784 - 799]
+parameter vbp = 31;         // end of vertical back porch  {(0-1) vsync pulse + [2-30] vertical back porch} 
+parameter vfp = 511;     // beginning of vertical front porch [511 - 520]
+// active horizontal video is therefore: 784 - 144 = 640  i.e [144 - 783]
+// active vertical video is therefore: 511 - 31 = 480  i.e [31 - 510] 
+clock_divider k1(.clk(clk), .outclk(vga_clk));
+// registers for storing the horizontal & vertical counters
+
+ 
+parameter rows = 256;
+parameter cols = 256;
+                    //input image block memory details
+wire [15:0] mem_r;
+wire [15:0] mem_g;
+wire [15:0] mem_b;
+reg [16:0] display_count_in = 0;
+reg [16:0] pixel_count = 0;
+reg input_load = 1'b0;
+reg input_load_r = 1'b0;
+reg input_load_g = 1'b0;
+reg input_load_b = 1'b0;
+reg [16:0] count_r = 17'd0;
+reg [16:0] count_g = 17'd0;
+reg [16:0] count_b = 17'd0;
+wire [7:0] data_r;
+wire [7:0] data_g;
+wire [7:0] data_b;
+reg img_pro_check = 1'b0;
+reg en_input_img = 1'b0;
+assign led_img_pro = img_pro_check;
+//assign led_input = en_input_img;
+assign mem_r = (input_load == 1'b0 | en_input_img == 1'b0) ? ((input_load == 1'b0 ? count_r:16'b0)|(en_input_img == 1'b0 ? pixel_count:16'b0)):display_count_in;
+assign mem_g = (input_load == 1'b0 | en_input_img == 1'b0) ? ((input_load == 1'b0 ? count_g:16'b0)|(en_input_img == 1'b0 ? pixel_count:16'b0)):display_count_in;
+assign mem_b = (input_load == 1'b0 | en_input_img == 1'b0) ? ((input_load == 1'b0 ? count_b:16'b0)|(en_input_img == 1'b0 ? pixel_count:16'b0)):display_count_in;
+wire [7:0] win_r;
+wire [7:0] win_g;
+wire [7:0] win_b;
+wire wwea_r, wwea_g, wwea_b; 
+//reg wea_in = 1'b0;
+assign wwea_r = ~input_load_r;
+assign wwea_g = ~input_load_g;
+assign wwea_b = ~input_load_b;
+
+//blk_mem_gen_img k2 (.clka(clk), .wea(wwea), .addra(mem), .dina(wdatain), .douta(data));
+blk_mem_gen_img_red k3 (.clka(clk), .wea(wwea_r), .addra(mem_r), .dina(win_r), .douta(data_r));
+blk_mem_gen_img_green k4 (.clka(clk), .wea(wwea_g), .addra(mem_g), .dina(win_g), .douta(data_g));
+blk_mem_gen_img_blue k5 (.clka(clk), .wea(wwea_b), .addra(mem_b), .dina(win_b), .douta(data_b));
+
+             //Loading image from RASPBERRY PI THROUGH SPI PROTOCOL
+reg [7:0] RBUFF = 8'b0;
+reg [7:0] data_recv;
+assign win_r = RBUFF;
+assign win_g = RBUFF;
+assign win_b = RBUFF;
+always @(posedge clk)
+begin
+    if(reset_image)
+        begin
+            input_load_r = 1'b0;
+            input_load_g = 1'b0;
+            input_load_b = 1'b0;
+            input_load = 1'b0;
+        end
+    else
+        begin
+            if(count_b > 17'd65535)
+                    begin
+                    input_load_b = 1'b1;
+                    input_load = 1'b1;
+                    end 
+            if(count_g > 17'd65535)
+                    begin
+                    input_load_g = 1'b1;
+                    end
+            if(count_r > 17'd65535)
+                   begin
+                   input_load_r = 1'b1;
+                   end   
+        end
+
+end
+
+reg [3:0] count = 4'b0;    
+always@(posedge SCLK or posedge reset_image)
+begin
+    if(reset_image)
+        begin
+            count = 0;
+            data_recv = 0;
+            count_r = 0;
+            count_g = 0;
+            count_b = 0;
+        end
+    else
+        begin
+            if(CS == 0)
+                begin
+                    if(count == 7)
+                        begin
+                            data_recv[7 - count] = MOSI;
+                             if(input_load_r == 1'b0)
+                                     begin
+                                     RBUFF = data_recv;   
+                                     count_r = count_r + 17'd1;
+                                     end
+                              else if((input_load_r == 1'b1) && (input_load_g == 1'b0))
+                                     begin
+                                     RBUFF = data_recv;   
+                                     count_g = count_g + 17'd1;
+                                     end
+                              else if((input_load_g == 1'b1) && (input_load_b == 1'b0))
+                                     begin
+                                     RBUFF = data_recv;  
+                                     count_b = count_b + 17'd1;
+                                     end      
+                            count = 0;
+                        end
+                    else
+                        begin
+                        data_recv[7 - count] = MOSI;
+                        count = count + 1;
+                        end
+                 end
+                    
+            else
+                begin
+                    count = 0;
+                end    
+        end
+end                 
+
+                                     //processed image block memory details
+wire [15:0] mem_res;
+reg [16:0] k_total_res = 257;
+reg [16:0] display_count_out = 0;
+
+reg [7:0] data_res_rin;
+reg [7:0] data_res_gin;
+reg [7:0] data_res_bin;
+
+wire [7:0] data_res_ro;
+wire [7:0] data_res_go;
+wire [7:0] data_res_bo;
+assign mem_res = img_pro_check?display_count_out:k_total_res;
+
+wire [7:0] wdatain_r;
+wire [7:0] wdatain_g;
+wire [7:0] wdatain_b;
+
+wire wwea_res;
+//reg wea_res = 1'b1; 
+blk_mem_gen_img_res_r k6 (.clka(clk), .wea(wwea_res), .addra(mem_res), .dina(wdatain_r), .douta(data_res_ro));
+blk_mem_gen_img_res_g k7 (.clka(clk), .wea(wwea_res), .addra(mem_res), .dina(wdatain_g), .douta(data_res_go));
+blk_mem_gen_img_res_b k8 (.clka(clk), .wea(wwea_res), .addra(mem_res), .dina(wdatain_b), .douta(data_res_bo));
+
+assign wdatain_r = data_res_rin;
+assign wdatain_g = data_res_gin;
+assign wdatain_b = data_res_bin;
+
+assign wwea_res = ~img_pro_check;
+                
+reg [9:0] hc;
+reg [9:0] vc;
+
+// Horizontal & vertical counters --
+
+always @(posedge vga_clk)
+begin
+// reset condition
+    // keep counting until the end of the line
+    if (hc < hpixels - 1)
+        hc <= hc + 1;
+    else
+    // When we hit the end of the line, reset the horizontal
+    // counter and increment the vertical counter.
+    // If vertical counter is at the end of the frame, then
+    // reset that one too.
+    begin
+        hc <= 0;
+        if (vc < vlines - 1)
+            vc <= vc + 1;
+        else
+            vc <= 0;
+    end
+end
+
+// generate sync pulses (active low)
+wire disp_area;
+assign hsync = (hc < hpulse) ? 0:1;
+assign vsync = (vc < vpulse) ? 0:1;
+assign disp_area = (vc >= vbp && vc < vfp) && (hc >= hbp && hc < hfp);
+
+
+
+//image processing
+reg [8:0] data_count = 0;
+reg [1:0] count_border = 0;
+reg [6143:0] buffer_RAM_r;
+reg [6143:0] buffer_RAM_g;
+reg [6143:0] buffer_RAM_b;
+
+wire [7:0] val_r;
+wire [7:0] val_g;
+wire [7:0] val_b;
+                            //AVERAGE FILTER  SELECT PROCESS = 001
+wire [7:0] avg_r;
+wire [7:0] avg_g;
+wire [7:0] avg_b;
+
+wire [11:0] add_r;
+wire [8:0] div_r;
+wire [11:0] add_g;
+wire [8:0] div_g;
+wire [11:0] add_b;
+wire [8:0] div_b;
+assign add_r = buffer_RAM_r[6143:6136] + buffer_RAM_r[6135:6128] + buffer_RAM_r[6127:6120] +
+            buffer_RAM_r[4095:4088] + buffer_RAM_r[4087:4080] + buffer_RAM_r[4079:4072]+
+            buffer_RAM_r[2047:2040] + buffer_RAM_r[2039:2032] + buffer_RAM_r[2031:2024];
+
+assign div_r = add_r >> 3;   
+
+assign add_g = buffer_RAM_g[6143:6136] + buffer_RAM_g[6135:6128] + buffer_RAM_g[6127:6120] +
+            buffer_RAM_g[4095:4088] + buffer_RAM_g[4087:4080] + buffer_RAM_g[4079:4072]+
+            buffer_RAM_g[2047:2040] + buffer_RAM_g[2039:2032] + buffer_RAM_g[2031:2024];
+
+assign div_g = add_g >> 3;   
+
+assign add_b = buffer_RAM_b[6143:6136] + buffer_RAM_b[6135:6128] + buffer_RAM_b[6127:6120] +
+            buffer_RAM_b[4095:4088] + buffer_RAM_b[4087:4080] + buffer_RAM_b[4079:4072]+
+            buffer_RAM_b[2047:2040] + buffer_RAM_b[2039:2032] + buffer_RAM_b[2031:2024];
+
+assign div_b = add_b >> 3;     
+
+assign avg_r = (div_r > 255)?8'd255: div_r;     
+assign avg_g = (div_g > 255)?8'd255: div_g;     
+assign avg_b = (div_b > 255)?8'd255: div_b;     
+
+                //Gaussian FILTER  SELECT PROCESS = 010
+wire [11:0] gauss_add_r;
+wire [7:0] gauss_r;
+wire [11:0] gauss_add_g;
+wire [7:0] gauss_g;
+wire [11:0] gauss_add_b;
+wire [7:0] gauss_b;
+              
+assign gauss_add_r =                            buffer_RAM_r[6135:6128] + 
+                buffer_RAM_r[4095:4088] + 9*buffer_RAM_r[4087:4080] + buffer_RAM_r[4079:4072]+
+                                            buffer_RAM_r[2039:2032];
+assign gauss_r = gauss_add_r >> 4;   
+
+assign gauss_add_g =                            buffer_RAM_g[6135:6128] + 
+                buffer_RAM_g[4095:4088] + 9*buffer_RAM_g[4087:4080] + buffer_RAM_g[4079:4072]+
+                                            buffer_RAM_g[2039:2032];
+
+assign gauss_g = gauss_add_g >> 4;   
+
+assign gauss_add_b =                            buffer_RAM_b[6135:6128] + 
+                 buffer_RAM_b[4095:4088] + 9*buffer_RAM_b[4087:4080] + buffer_RAM_b[4079:4072]+
+                                            buffer_RAM_b[2039:2032];
+
+assign gauss_b = gauss_add_b >> 4;     
+
+                //SHARP FILTER  SELECT PROCESS = 011  edge detection = 101
+wire signed [11:0] sharp_add_r;
+wire [7:0] sharp_r;
+wire signed [11:0] sharp_add_g;
+wire [7:0] sharp_g;
+wire signed [11:0] sharp_add_b;
+wire [7:0] sharp_b;   
+wire signed [11:0] sharp_sub_r;
+wire signed [11:0] sharp_sub_g;
+wire signed [11:0] sharp_sub_b;
+
+wire [7:0] edge_r;
+wire [7:0] edge_g;
+wire [7:0] edge_b;
+wire [13:0] edge_rgb_add;
+wire [7:0] edge_rgb;
+
+assign sharp_add_r =  buffer_RAM_r[6143:6136] + buffer_RAM_r[6135:6128] + buffer_RAM_r[6127:6120] +
+            buffer_RAM_r[4095:4088] + buffer_RAM_r[4079:4072]+
+            buffer_RAM_r[2047:2040] + buffer_RAM_r[2039:2032] + buffer_RAM_r[2031:2024] - 8*buffer_RAM_r[4087:4080];
+assign edge_r = ((sharp_add_r > 255) || (sharp_add_r < 0))?(sharp_add_r > 255 ? 8'd255:8'd0):sharp_add_r[7:0];
+
+assign sharp_add_g =  buffer_RAM_g[6143:6136] + buffer_RAM_g[6135:6128] + buffer_RAM_g[6127:6120] +
+           buffer_RAM_g[4095:4088] + buffer_RAM_g[4079:4072]+
+           buffer_RAM_g[2047:2040] + buffer_RAM_g[2039:2032] + buffer_RAM_g[2031:2024] - 8*buffer_RAM_g[4087:4080];
+
+
+assign edge_g = ((sharp_add_g > 255) || (sharp_add_g < 0))?(sharp_add_g > 255 ? 8'd255:8'd0):sharp_add_g[7:0]; 
+
+assign sharp_add_b = buffer_RAM_b[6143:6136] + buffer_RAM_b[6135:6128] + buffer_RAM_b[6127:6120] +
+            buffer_RAM_b[4095:4088] + buffer_RAM_b[4079:4072]+
+            buffer_RAM_b[2047:2040] + buffer_RAM_b[2039:2032] + buffer_RAM_b[2031:2024] - 8*buffer_RAM_b[4087:4080];
+
+assign edge_b =((sharp_add_b > 255) || (sharp_add_b < 0))?(sharp_add_b > 255 ? 8'd255:8'd0):sharp_add_b[7:0];   
+
+
+assign edge_rgb_add = 19*edge_r + 37*edge_g + 7*edge_b;
+assign edge_rgb = edge_rgb_add >> 6 ;
+
+assign sharp_sub_r = buffer_RAM_r[4087:4080] - sharp_add_r; 
+assign sharp_sub_g = buffer_RAM_g[4087:4080] - sharp_add_g;            
+assign sharp_sub_b = buffer_RAM_b[4087:4080] - sharp_add_b;            
+assign sharp_r = ((sharp_sub_r > 255) || (sharp_sub_r < 0))?(sharp_sub_r > 255 ? 8'd255:8'd0):sharp_sub_r[7:0];
+assign sharp_g = ((sharp_sub_g > 255) || (sharp_sub_g < 0))?(sharp_sub_g > 255 ? 8'd255:8'd0):sharp_sub_g[7:0];
+assign sharp_b = ((sharp_sub_b > 255) || (sharp_sub_b < 0))?(sharp_sub_b > 255 ? 8'd255:8'd0):sharp_sub_b[7:0];
+
+       
+                                    //GRAY SCALE  SELECT PROCESS = 100
+wire [13:0] gray_add;
+wire [7:0] gray_div;
+assign gray_add = 19*buffer_RAM_r[4087:4080] + 37*buffer_RAM_g[4087:4080] + 7*buffer_RAM_b[4087:4080];
+assign gray_div = gray_add >> 6;
+/// assign value according to process
+assign val_r = (select_process > 0)? (((select_process == 3'b001)?avg_r:8'b0)|((select_process == 3'b010)?gauss_r:8'b0)| 
+            ((select_process == 3'b011)?sharp_r:8'b0)|((select_process == 3'b100)?gray_div:8'b0)|
+            ((select_process == 3'b101)?edge_rgb:8'b0)):8'b0;
+assign val_g = (select_process > 0)? (((select_process == 3'b001)?avg_g:8'b0)|((select_process == 3'b010)?gauss_g:8'b0)| 
+                            ((select_process == 3'b011)?sharp_g:8'b0)|((select_process == 3'b100)?gray_div:8'b0)|
+                              ((select_process == 3'b101)?edge_rgb:8'b0)):8'b0;
+assign val_b = (select_process > 0)? (((select_process == 3'b001)?avg_b:8'b0)|((select_process == 3'b010)?gauss_b:8'b0)| 
+                            ((select_process == 3'b011)?sharp_b:8'b0)|((select_process == 3'b100)?gray_div:8'b0)|
+                              ((select_process == 3'b101)?edge_rgb:8'b0)):8'b0;                                                
+reg [2:0] state_img_pro = 0;
+always @(posedge clk)
+begin
+if(reset)
+begin
+img_pro_check = 1'b0;
+en_input_img = 1'b0;
+k_total_res = 257;
+state_img_pro = 0;
+pixel_count = 0;
+data_count = 0;
+count_border = 0;
+end
+else if((select_process > 0) && (input_load == 1'b1))
+begin
+    case(state_img_pro)
+    3'b0:begin
+        if(pixel_count < 768)
+            begin
+               buffer_RAM_r[7:0] = data_r[7:0];  
+               buffer_RAM_g[7:0] = data_g[7:0];  
+               buffer_RAM_b[7:0] = data_b[7:0];  
+
+               pixel_count = pixel_count + 1;         
+               state_img_pro= 3'b01;
+            end
+        else   
+            begin
+                state_img_pro = 3'b10;
+            end
+         end
+   3'b01:begin
+             buffer_RAM_r[6143:0] = buffer_RAM_r[6143:0] << 8;
+             buffer_RAM_g[6143:0] = buffer_RAM_g[6143:0] << 8;
+             buffer_RAM_b[6143:0] = buffer_RAM_b[6143:0] << 8;
+
+             state_img_pro = 3'b0;
+          end   
+    3'b10:begin
+            if(data_count < 254)
+                begin
+                buffer_RAM_r[7:0] = data_r[7:0];  
+                buffer_RAM_g[7:0] = data_g[7:0];  
+                buffer_RAM_b[7:0] = data_b[7:0];  
+
+                data_res_rin[7:0] = val_r;
+                data_res_gin[7:0] = val_g;
+                data_res_bin[7:0] = val_b;
+
+                pixel_count = pixel_count + 1;
+                k_total_res = k_total_res + 1;
+                data_count = data_count + 1;
+                state_img_pro = 3'b11;
+                end   
+            else
+                begin
+                    if(count_border < 2)
+                        begin
+                        buffer_RAM_r[7:0] = data_r[7:0];
+                        buffer_RAM_g[7:0] = data_g[7:0];  
+                        buffer_RAM_b[7:0] = data_b[7:0]; 
+                        data_res_rin[7:0] = 0;
+                        data_res_gin[7:0] = 0;
+                        data_res_bin[7:0] = 0;
+                        pixel_count = pixel_count + 1;
+                        k_total_res = k_total_res + 1;
+                        count_border = count_border + 1;        
+                        state_img_pro = 3'b11;
+                        end
+                     else
+                        begin
+                        data_count = 0;
+                        count_border = 0;
+                        state_img_pro = 3'b10;
+                        end   
+                end          
+           end   
+      3'b11:begin
+            if(pixel_count < 65536)
+                 begin
+                 buffer_RAM_r[6143:0] = buffer_RAM_r[6143:0] << 8;
+                 buffer_RAM_g[6143:0] = buffer_RAM_g[6143:0] << 8;
+                 buffer_RAM_b[6143:0] = buffer_RAM_b[6143:0] << 8;
+                 state_img_pro = 3'b10;
+                 end
+             else
+                begin
+                    img_pro_check = 1'b1;
+                    en_input_img = 1'b1;
+                end    
+            end     
+    endcase
+end    
+end
+
+always @(posedge vga_clk)
+begin
+// first check if we're within vertical active video range
+if (disp_area)
+   begin
+    // now display different colors every 80 pixels
+    // while we're within the active horizontal range
+
+    if((sw_proc_img == 1'b1) && (img_pro_check == 1'b1))
+        begin
+            if ((vc >= vbp+110 && vc < vbp+366) && (hc >= hbp+200 && hc < hbp+456))
+                begin
+                    red = data_res_ro[7:4];
+                    green = data_res_go[7:4];
+                    blue = data_res_bo[7:4];
+                    display_count_out = display_count_out+1;
+                end
+             else if(vc >= vbp+366)
+                begin
+                       red = 0;
+                       green = 0;
+                       blue = 0;    
+                       display_count_out = 0;   
+                end
+            else
+              begin
+                  red = 0;
+                  green = 0;
+                  blue = 0;
+              end
+        end
+    else if ((en_input_img == 1'b1) && (sw_proc_img == 1'b0))
+        begin
+            if ((vc >= vbp+110 && vc < vbp+366) && (hc >= hbp+200 && hc < hbp+456))
+                begin
+                    red = data_r[7:4];
+                    green = data_g[7:4];
+                    blue = data_b[7:4];
+                    display_count_in = display_count_in+1;
+                end
+             else if(vc >= vbp+366)
+                begin
+                       red = 0;
+                       green = 0;
+                       blue = 0;    
+                       display_count_in = 0;   
+                end
+            else
+              begin
+                  red = 0;
+                  green = 0;
+                  blue = 0;
+              end
+        end    
+    else
+        begin
+            red = 0;
+            green = 0;
+            blue = 0;    
+        end    
+    end       
+else
+    begin
+        red = 0;
+        green = 0;
+        blue = 0;
+    end
+    
+end
+
+endmodule
